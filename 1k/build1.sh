@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2021 Bytedance Inc.
+# Copyright (c) 2021-2022 Bytedance Inc.
 #
 
 BUILDWARE_ROOT=`pwd`
@@ -41,7 +41,7 @@ PROPS_FILE="src/${LIB_NAME}/build.yml"
 eval $(parse_yaml $PROPS_FILE)
 
 echo "repo=$repo"
-echo "config_options_2=$config_options_2"
+echo "config_options_embed=$config_options_embed"
 echo "cb_tool=$cb_tool"
 
 if [ "$tag_dot2ul" = "true" ]; then
@@ -53,7 +53,7 @@ echo "BUILD_TARGET=$BUILD_TARGET"
 echo "BUILD_ARCH=$BUILD_ARCH"
 
 # Determine build target & config options
-CONFIG_OPTIONS=$config_options_1
+CONFIG_OPTIONS=$config_options_unix
 if [ "$BUILD_TARGET" = "linux" ] ; then
     CONFIG_TARGET=
 elif [ "$BUILD_TARGET" = "osx" ] ; then
@@ -82,9 +82,9 @@ elif [ "$BUILD_TARGET" = "ios" ] ; then
 
         IOS_PLATFORM=OS
         if [ "$BUILD_ARCH" = "arm" ] ; then
-            CONFIG_TARGET=ios-cross
+            CONFIG_TARGET=ios-cross-bitcode
         elif [ "$BUILD_ARCH" = "arm64" ] ; then
-            CONFIG_TARGET=ios64-cross
+            CONFIG_TARGET=ios64-cross-bitcode
         elif [ "$BUILD_ARCH" = "x64" ] ; then
             CONFIG_TARGET=ios-sim64-corss
             IOS_PLATFORM=Simulator
@@ -115,11 +115,11 @@ elif [ "$BUILD_TARGET" = "ios" ] ; then
         fi
         ISDKP=$(xcrun --sdk $SDK_NAME --show-sdk-path)
         ICC=$(xcrun --sdk $SDK_NAME --find clang)
-        ISDKF="-arch $ARCH_NAME -isysroot $ISDKP"
+        ISDKF="-fembed-bitcode -arch $ARCH_NAME -isysroot $ISDKP"
         CONFIG_TARGET="DEFAULT_CC=clang HOST_CC=\"$HOST_CC\" CROSS=\"$(dirname $ICC)/\" TARGET_FLAGS=\"$ISDKF\" TARGET_SYS=iOS XCFLAGS=\"$XCFLAGS\" LUAJIT_A=libluajit.a"
     fi
 
-    CONFIG_OPTIONS="$CONFIG_OPTIONS $config_options_2"
+    CONFIG_OPTIONS="$CONFIG_OPTIONS $config_options_embed"
 elif [ "$BUILD_TARGET" = "android" ] ; then
     if [ "$cb_tool" = "cmake" ] ; then
         if [ "$BUILD_ARCH" = "arm" ] ; then
@@ -133,7 +133,10 @@ elif [ "$BUILD_TARGET" = "android" ] ; then
         if [ "$BUILD_ARCH" = "arm64" ] ; then
             CONFIG_TARGET="android-$BUILD_ARCH -D__ANDROID_API__=$android_api_level_arm64"
         else
-            CONFIG_TARGET="android-$BUILD_ARCH -D__ANDROID_API__=$android_api_level"
+            CONFIG_TARGET="android-$BUILD_ARCH -D__ANDROID_API__=$android_api_level "
+            if [ "$BUILD_ARCH" = "x86" ] ; then
+                CONFIG_TARGET="$CONFIG_TARGET -latomic"
+            fi
         fi
     else # luajit TODO: move to custom config.sh
         NDKBIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
@@ -153,7 +156,7 @@ elif [ "$BUILD_TARGET" = "android" ] ; then
         echo NDKCC=$NDKCC
     fi
 
-    CONFIG_OPTIONS="$CONFIG_OPTIONS $config_options_2"
+    CONFIG_OPTIONS="$CONFIG_OPTIONS $config_options_embed"
 else
   return 1
 fi
@@ -169,6 +172,9 @@ if [[ $repo == *".git" ]] ; then
     LIB_SRC=$LIB_NAME
 else
     LIB_SRC=$(basename "${repo%.*}")
+    if [[ $LIB_SRC == *".tar" ]] ; then
+        LIB_SRC=$(basename "${LIB_SRC%.*}")
+    fi
 fi
 
 # Checking out...
@@ -182,10 +188,19 @@ if [ ! -d $LIB_SRC ] ; then
         git checkout $release_tag
         git submodule update --init --recursive
     else
-        outputFile="${LIB_SRC}.zip"
+        if [[ $repo == *".tar.gz" ]] ; then
+            outputFile="${LIB_SRC}.tar.gz"
+        else
+            outputFile="${LIB_SRC}.zip"
+        fi
         echo "Downloading $repo ---> $outputFile"
         curl $repo -o ./$outputFile
-        unzip -q ./$outputFile -d ./
+
+        if [[ $repo == *".tar.gz" ]] ; then
+            tar -xvzf ./$outputFile
+        else
+            unzip -q ./$outputFile -d ./
+        fi
         cd $LIB_SRC
     fi
 else
@@ -207,7 +222,7 @@ if [ "$cb_tool" = "cmake" ] ; then
         CONFIG_ALL_OPTIONS="$CONFIG_ALL_OPTIONS -DOPENSSL_INCLUDE_DIR=${openssl_dir}include -DOPENSSL_LIB_DIR=${openssl_dir}lib"
     fi
     echo CONFIG_ALL_OPTIONS="$CONFIG_ALL_OPTIONS"
-    cmake -S . -B build_$BUILD_ARCH $CONFIG_ALL_OPTIONS
+    cmake "-DCMAKE_C_FLAGS=-fPIC" -S . -B build_$BUILD_ARCH $CONFIG_ALL_OPTIONS
     cmake --build build_$BUILD_ARCH --config Release
     cmake --install build_$BUILD_ARCH
 elif [ "$cb_tool" = "perl" ] ; then # openssl TODO: move to custom build.sh
